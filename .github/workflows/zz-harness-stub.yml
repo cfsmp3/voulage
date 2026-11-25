@@ -1,0 +1,13 @@
+name: Harness Stub
+on:
+  workflow_call:
+    inputs:
+      pull-from: {type: string, required: false}
+      push-to: {type: string, required: false}
+      packages-path: {type: string, required: false}
+      only-codename: {type: string, required: false}
+jobs:
+  stub:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo "HARNESS stub called with ${{ toJSON(inputs) }}"
