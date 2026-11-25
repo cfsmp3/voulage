@@ -1,0 +1,15 @@
+name: Harness publish gating (after)
+on: push
+jobs:
+  run:
+    uses: ./.github/workflows/zz-harness-build.yml
+    with:
+      do-publish: "yes"
+      force-build: "yes"
+      stage: testing
+      fail-targets: "testing-ubuntu-questing-arm64"
+      fail-late-targets: "testing-debian-trixie-amd64"
+      expect-legs: "12"
+      expect-kept: "debian/bookworm debian/testing ubuntu/jammy ubuntu/noble ubuntu/resolute ubuntu/stonking"
+      expect-held: "debian/trixie ubuntu/questing"
+    secrets: inherit
