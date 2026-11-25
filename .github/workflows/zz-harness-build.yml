@@ -273,6 +273,8 @@ jobs:
           path: changelogs
           pattern: CHANGELOG_*
           merge-multiple: true
+      - name: Fake Server Root
+        run: sudo mkdir -p /opt/archives && sudo chown -R "$(id -u):$(id -g)" /opt/archives
       - name: Fake Server
         uses: actions/download-artifact@v4
         with:
@@ -342,8 +344,8 @@ jobs:
       - name: Setup SSH
         if: steps.hold.outputs.hold != ''
         run: |
-          printf '#!/bin/sh\necho "HARNESS ssh $*" >&2\nshift\nexec sh -c "$1"\n' > /usr/local/bin/ssh
-          chmod +x /usr/local/bin/ssh
+          printf '#!/bin/sh\necho "HARNESS ssh $*" >&2\nshift\nexec sh -c "$1"\n' | sudo tee /usr/local/bin/ssh >/dev/null
+          sudo chmod +x /usr/local/bin/ssh
       - name: Hold Failed Targets
         if: steps.hold.outputs.hold != ''
         env:
