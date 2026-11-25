@@ -1,70 +1,6 @@
-name: Package Builder Debian v5
+name: Harness Build
 run-name: Build ${{ inputs.stage }} ${{ inputs.only-package }} Packages ${{ inputs.distro }} ${{ inputs.codename }} ${{ inputs.arch }}
-
 on:
-  workflow_dispatch:
-    inputs:
-      do-publish:
-        description: "Publish after build"
-        type: choice
-        options:
-          - "yes"
-          - "no"
-        required: true
-        default: "yes"
-      force-build:
-        description: "Force build without check for changes"
-        type: choice
-        options:
-          - "yes"
-          - "no"
-        required: true
-        default: "no"
-      stage:
-        description: "Stage to build"
-        type: choice
-        options:
-          - all
-          - experimental
-          - unstable
-          - testing
-          - backports
-          - release-3_0
-          - release-3_1
-          - release-3_2
-          - release-3_3
-          - release-3_4
-          - release-3_5
-        required: true
-        default: "unstable"
-      distro:
-        description: "Distro to build (debian, ubuntu)"
-        type: choice
-        options:
-          - ""
-          - debian
-          - ubuntu
-        required: false
-        default: ""
-      codename:
-        description: "Codename to build (e.g. noble, bookworm)"
-        type: string
-        required: false
-        default: ""
-      arch:
-        description: "Architecture to build (amd64, arm64)"
-        type: choice
-        options:
-          - ""
-          - amd64
-          - arm64
-        required: false
-        default: ""
-      only-package:
-        description: "Only build package"
-        type: string
-        required: false
-        default: ""        
   workflow_call:
     inputs:
       do-publish:
@@ -98,16 +34,33 @@ on:
         description: "Only build package"
         type: string
         required: false
-
+      fail-targets:
+        type: string
+        required: false
+        default: ""
+      fail-late-targets:
+        type: string
+        required: false
+        default: ""
+      expect-legs:
+        type: string
+        required: false
+        default: ""
+      expect-kept:
+        type: string
+        required: false
+        default: ""
+      expect-held:
+        type: string
+        required: false
+        default: ""
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.stage }}
   cancel-in-progress: true
-
 # Need to explicitly set shell according to: https://github.com/actions/runner/issues/353#issuecomment-1067227665
 defaults:
   run:
     shell: bash
-
 jobs:
   matrix-builder:
     runs-on: ubuntu-24.04
@@ -124,7 +77,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Calculate Matrix
         id: calc-matrix
         run: |
@@ -211,7 +163,6 @@ jobs:
           echo "runners=$(jq -n -c "$(jq -n -c --arg amd64 "ubuntu-24.04" --arg arm64 "ubuntu-24.04-arm" '$ARGS.named')" '$ARGS.named')" >> $GITHUB_OUTPUT
           echo "includes=$(jq -n -c "[$(printf '%s\n' "${INCLUDES[@]}" | paste -sd,)]" '$ARGS.named')" >> $GITHUB_OUTPUT
           echo "excludes=$(jq -n -c "[$(printf '%s\n' "${EXCLUDES[@]}" | paste -sd,)]" '$ARGS.named')" >> $GITHUB_OUTPUT
-
   # build packages and sources
   build:
     runs-on: ${{ fromJSON(needs.matrix-builder.outputs.runners)[matrix.arch] }}
@@ -224,14 +175,11 @@ jobs:
         distro: ${{ fromJSON(needs.matrix-builder.outputs.distros) }}
         codename: ${{ fromJSON(needs.matrix-builder.outputs.codenames) }}
         arch: ${{ fromJSON(needs.matrix-builder.outputs.arches) }}
-
         include: ${{ fromJSON(needs.matrix-builder.outputs.includes) }}
         exclude: ${{ fromJSON(needs.matrix-builder.outputs.excludes) }}
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Set Job Parameters
         id: init
         run: |
@@ -249,187 +197,62 @@ jobs:
           echo "suite=${{ fromJSON(needs.matrix-builder.outputs.suites)[matrix.stage]['suite'] }}" >> $GITHUB_OUTPUT
           echo "component=${{ fromJSON(needs.matrix-builder.outputs.suites)[matrix.stage]['component'] }}" >> $GITHUB_OUTPUT
           echo "target=${{ matrix.stage }}-${{ matrix.distro }}-${{ matrix.codename }}-${{ matrix.arch }}" >> $GITHUB_OUTPUT
-
-      - name: Environment Setup
-        run: |
-          set -e
-          mkdir -p ${{ steps.init.outputs.changelogs-path }} || true
-          mkdir -p ${{ steps.init.outputs.manifest-path }} || true
-
-          sudo rm -rf /etc/apt/sources.list.d/regolith.list
-
-      - name: Pull Manifest
-        if: inputs.force-build == 'no'
-        run: |
-          cp "${{ steps.init.outputs.manifest-path }}/${{ steps.init.outputs.distro }}/${{ steps.init.outputs.codename }}/${{ steps.init.outputs.suite }}-${{ steps.init.outputs.component }}/manifest.txt" ${{ steps.init.outputs.manifest-path }} || true
-          echo -e "\033[0;34mCurrent manifest:\033[0m"
-          cat ${{ steps.init.outputs.manifest-path }}/manifest.txt || true
-
-      - name: Check for changes
+      - name: Fake Build
         id: changes
+        env:
+          FAIL: ${{ inputs.fail-targets }}
         run: |
           set -e
-          set -o pipefail
-
-          if [ "${{ inputs.force-build }}" == "no" ]; then
-            CHANGE_OUTPUT=$(${{ steps.init.outputs.gh-repo-path }}/.github/scripts/main.sh \
-              check \
-              --extension ${{ steps.init.outputs.gh-repo-path }}/.github/scripts/ext-debian.sh \
-              --git-repo-path ${{ steps.init.outputs.gh-repo-path }} \
-              --manifest-path ${{ steps.init.outputs.manifest-path }} \
-              --pkg-build-path ${{ steps.init.outputs.package-build-path }} \
-              --pkg-publish-path ${{ steps.init.outputs.package-publish-path }} \
-              --distro "${{ steps.init.outputs.distro }}" \
-              --codename "${{ steps.init.outputs.codename }}" \
-              --arch "${{ steps.init.outputs.arch }}" \
-              --stage "${{ steps.init.outputs.stage }}" \
-              --suite "${{ steps.init.outputs.suite }}" \
-              --component "${{ steps.init.outputs.component }}" \
-              --only-package "${{ inputs.only-package }}" | tail -n1)
-
-            if [ "$CHANGE_OUTPUT" == "No package changes found, exiting." ]; then
-              echo "changed=0" >> $GITHUB_OUTPUT
-              echo -e "\033[0;31mNo package changes to build.\033[0m"
-            else
-              echo "changed=1" >> $GITHUB_OUTPUT
-              echo -e "\033[0;34mNew Manifest:\033[0m"
-              cat ${{ steps.init.outputs.manifest-path }}/next-manifest.txt
-            fi
-          else
-            echo "changed=1" >> $GITHUB_OUTPUT
-            echo -e "\033[0;34m'force-build' selected, proceeding with building package.\033[0m"
-          fi
-
-      - name: Import GPG Key
-        uses: regolith-linux/actions/import-gpg@main
-        if: steps.changes.outputs.changed == 1
+          t="${{ steps.init.outputs.target }}"
+          distro="${{ steps.init.outputs.distro }}"; codename="${{ steps.init.outputs.codename }}"
+          suite="${{ steps.init.outputs.suite }}"; component="${{ steps.init.outputs.component }}"; arch="${{ steps.init.outputs.arch }}"
+          echo "changed=1" >> $GITHUB_OUTPUT
+          if [[ " $FAIL " == *" $t "* ]]; then echo "HARNESS: simulated build failure of $t (before upload)"; exit 1; fi
+          m="${{ steps.init.outputs.manifest-path }}"; c="${{ steps.init.outputs.changelogs-path }}"
+          mkdir -p "$m" "$c"
+          echo "harness manifest from $t, run ${{ github.run_id }}" > "$m/${distro}_${codename}_${suite}-${component}_manifest.txt"
+          echo "Published fake_1.0_${arch}.deb in $distro/$codename/${{ steps.init.outputs.stage }}" > "$c/CHANGELOG_$t.txt"
+          echo "${distro}=${codename}=${suite}=f=fake=1.0-1=fake_1.0.orig.tar.gz" > "$c/SOURCELOG_$t.txt"
+          s="${{ steps.init.outputs.gh-repo-path }}/server"
+          p="$s/packages/voulage/run-${{ github.run_id }}/$distro/$codename/$suite"
+          w="$s/workspace/voulage/run-${{ github.run_id }}"
+          mkdir -p "$p" "$w"
+          echo "deb $t" > "$p/fake_1.0_$arch.deb"
+          cp "$c/SOURCELOG_$t.txt" "$w/"
+      - name: Fake Upload Package
+        uses: actions/upload-artifact@v4
         with:
-          gpg-key: "${{ secrets.PACKAGE_PRIVATE_KEY2 }}"
-
-      - name: Build Packages
-        if: steps.changes.outputs.changed == 1
+          name: SERVER_${{ steps.init.outputs.target }}
+          path: ${{ steps.init.outputs.gh-repo-path }}/server/
+      - name: Fake Late Failure
         env:
-          DEBEMAIL: "regolith.linux@gmail.com"
-          DEBFULLNAME: "Regolith Linux"
-          DEBIAN_FRONTEND: noninteractive
+          FAIL_LATE: ${{ inputs.fail-late-targets }}
         run: |
-          set -e
-          set -o pipefail
-
-          ${{ steps.init.outputs.gh-repo-path }}/.github/scripts/main.sh \
-            build \
-            --extension ${{ steps.init.outputs.gh-repo-path }}/.github/scripts/ext-debian.sh \
-            --git-repo-path ${{ steps.init.outputs.gh-repo-path }} \
-            --manifest-path ${{ steps.init.outputs.manifest-path }} \
-            --pkg-build-path ${{ steps.init.outputs.package-build-path }} \
-            --pkg-publish-path ${{ steps.init.outputs.package-publish-path }} \
-            --distro "${{ steps.init.outputs.distro }}" \
-            --codename "${{ steps.init.outputs.codename }}" \
-            --arch "${{ steps.init.outputs.arch }}" \
-            --stage "${{ steps.init.outputs.stage }}" \
-            --suite "${{ steps.init.outputs.suite }}" \
-            --component "${{ steps.init.outputs.component }}" \
-            --only-package "${{ inputs.only-package }}" | tee -a ${{ steps.init.outputs.changelogs-path }}/CHANGELOG_${{ steps.init.outputs.target }}.raw.txt
-
-          if [ -f ${{ steps.init.outputs.manifest-path }}/next-manifest.txt ]; then
-            echo -e "\033[0;31mTemp manifest not deleted by main.sh, build aborted/failed.\033[0m"
-            exit 1
-          fi
-
-          echo "::group::Preparing manifest for upload"
-          mv ${{ steps.init.outputs.manifest-path }}/manifest.txt ${{ steps.init.outputs.manifest-path }}/${{ steps.init.outputs.distro }}_${{ steps.init.outputs.codename }}_${{ steps.init.outputs.suite }}-${{ steps.init.outputs.component }}_manifest.txt
-          echo "${{ steps.init.outputs.distro }}_${{ steps.init.outputs.codename }}_${{ steps.init.outputs.suite }}-${{ steps.init.outputs.component }}_manifest.txt prepared successfully."
-          echo "::endgroup::"
-
-          echo "::group::Preparing changelog and sourcelog for upload"
-          touch ${{ steps.init.outputs.changelogs-path }}/CHANGELOG_${{ steps.init.outputs.target }}.txt
-          if grep "^CHLOG:" ${{ steps.init.outputs.changelogs-path }}/CHANGELOG_${{ steps.init.outputs.target }}.raw.txt >/dev/null; then
-            grep "^CHLOG:" ${{ steps.init.outputs.changelogs-path }}/CHANGELOG_${{ steps.init.outputs.target }}.raw.txt | cut -c 7- > ${{ steps.init.outputs.changelogs-path }}/CHANGELOG_${{ steps.init.outputs.target }}.txt
-          fi
-
-          touch ${{ steps.init.outputs.changelogs-path }}/SOURCELOG_${{ steps.init.outputs.target }}.txt
-          if grep "^SRCLOG:" ${{ steps.init.outputs.changelogs-path }}/CHANGELOG_${{ steps.init.outputs.target }}.raw.txt >/dev/null; then
-            grep "^SRCLOG:" ${{ steps.init.outputs.changelogs-path }}/CHANGELOG_${{ steps.init.outputs.target }}.raw.txt | cut -c 8- > ${{ steps.init.outputs.changelogs-path }}/SOURCELOG_${{ steps.init.outputs.target }}.txt
-          fi
-
-          if [ ! -s ${{ steps.init.outputs.changelogs-path }}/CHANGELOG_${{ steps.init.outputs.target }}.txt ]; then
-            rm ${{ steps.init.outputs.changelogs-path }}/CHANGELOG_${{ steps.init.outputs.target }}.txt
-          else
-            echo "CHANGELOG_${{ steps.init.outputs.target }}.txt prepared successfully."
-          fi
-
-          if [ ! -s ${{ steps.init.outputs.changelogs-path }}/SOURCELOG_${{ steps.init.outputs.target }}.txt ]; then
-            rm ${{ steps.init.outputs.changelogs-path }}/SOURCELOG_${{ steps.init.outputs.target }}.txt
-          else
-            echo "SOURCELOG_${{ steps.init.outputs.target }}.txt prepared successfully."
-          fi
-          echo "::endgroup::"
-
-      - name: Setup SSH
-        uses: regolith-linux/actions/setup-ssh@main
-        if: inputs.do-publish == 'yes' && steps.changes.outputs.changed == 1
-        with:
-          ssh-host: "${{ secrets.KAMATERA_HOSTNAME2 }}"
-          ssh-key: "${{ secrets.KAMATERA_SSH_KEY }}"
-
-      - name: Upload Package
-        uses: regolith-linux/actions/upload-files@main
-        if: inputs.do-publish == 'yes' && steps.changes.outputs.changed == 1
-        env:
-          server-address: "${{ secrets.KAMATERA_HOSTNAME2 }}"
-          server-username: "${{ secrets.KAMATERA_USERNAME }}"
-        with:
-          upload-from: "${{ steps.init.outputs.package-publish-path }}"
-          upload-pattern: "*"
-          upload-to-base: "/opt/archives/packages/"
-          upload-to-folder: "voulage/"
-
-      - name: Upload SourceLog
-        uses: regolith-linux/actions/upload-files@main
-        if: inputs.do-publish == 'yes' && steps.changes.outputs.changed == 1
-        env:
-          server-address: "${{ secrets.KAMATERA_HOSTNAME2 }}"
-          server-username: "${{ secrets.KAMATERA_USERNAME }}"
-        with:
-          upload-from: "${{ steps.init.outputs.changelogs-path }}"
-          upload-pattern: "SOURCELOG_${{ steps.init.outputs.target }}.txt"
-          upload-to-base: "/opt/archives/workspace/"
-          upload-to-folder: "voulage/"
-
-      - name: Log Build Output
-        if: steps.changes.outputs.changed == 1
-        run: |
-          cat ${{ steps.init.outputs.manifest-path }}/${{ steps.init.outputs.distro }}_${{ steps.init.outputs.codename }}_${{ steps.init.outputs.suite }}-${{ steps.init.outputs.component }}_manifest.txt || true
-          echo -e "\033[0;34mContent of package publish path:\033[0m"
-          find ${{ steps.init.outputs.package-publish-path }}
-
+          t="${{ steps.init.outputs.target }}"
+          if [[ " $FAIL_LATE " == *" $t "* ]]; then echo "HARNESS: simulated failure of $t after its upload"; exit 1; fi
       - name: Upload Manifests
         uses: actions/upload-artifact@v4
         if: steps.changes.outputs.changed == 1
         with:
           name: MANIFESTS_${{ steps.init.outputs.target }}
           path: "${{ steps.init.outputs.manifest-path }}/*_manifest.txt"
-
       - name: Upload Changelogs
         uses: actions/upload-artifact@v4
         if: steps.changes.outputs.changed == 1
         with:
           name: CHANGELOG_${{ steps.init.outputs.target }}
           path: ${{ steps.init.outputs.changelogs-path }}/*${{ steps.init.outputs.target }}.txt
-
       # Last step: the changelogs job publishes only the targets whose legs all
       # reached it (see failed-targets.sh).
       - name: Mark Target Built
         run: |
           mkdir -p ${{ steps.init.outputs.gh-repo-path }}/built
           echo "${{ steps.init.outputs.target }}" > ${{ steps.init.outputs.gh-repo-path }}/built/${{ steps.init.outputs.target }}
-
       - name: Upload Build Marker
         uses: actions/upload-artifact@v4
         with:
           name: BUILT_${{ steps.init.outputs.target }}
           path: ${{ steps.init.outputs.gh-repo-path }}/built/${{ steps.init.outputs.target }}
-
   # calculate changelogs, and hold back the targets with a failed build leg
   # so that the other targets still publish
   changelogs:
@@ -444,21 +267,24 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Download Artifacts
         uses: actions/download-artifact@v4
         with:
           path: changelogs
           pattern: CHANGELOG_*
           merge-multiple: true
-
+      - name: Fake Server
+        uses: actions/download-artifact@v4
+        with:
+          path: /opt/archives
+          pattern: SERVER_*
+          merge-multiple: true
       - name: Download Build Markers
         uses: actions/download-artifact@v4
         with:
           path: built
           pattern: BUILT_*
           merge-multiple: true
-
       - name: Find Failed Targets
         id: hold
         env:
@@ -513,14 +339,11 @@ jobs:
             hold+=("/opt/archives/workspace/voulage/$RUN_FOLDER/$file" "/opt/archives/workspace/voulage/held/$RUN_FOLDER/$file")
           done
           echo "hold=${hold[*]}" >> $GITHUB_OUTPUT
-
       - name: Setup SSH
-        uses: regolith-linux/actions/setup-ssh@main
         if: steps.hold.outputs.hold != ''
-        with:
-          ssh-host: "${{ secrets.KAMATERA_HOSTNAME2 }}"
-          ssh-key: "${{ secrets.KAMATERA_SSH_KEY }}"
-
+        run: |
+          printf '#!/bin/sh\necho "HARNESS ssh $*" >&2\nshift\nexec sh -c "$1"\n' > /usr/local/bin/ssh
+          chmod +x /usr/local/bin/ssh
       - name: Hold Failed Targets
         if: steps.hold.outputs.hold != ''
         env:
@@ -539,7 +362,6 @@ jobs:
             shift 2
           done
           EOF
-
       - name: Check Changelogs
         id: check
         run: |
@@ -557,28 +379,51 @@ jobs:
             echo "package-changed=$(find changelogs -name CHANGELOG_\*.txt | wc -l)" >> $GITHUB_OUTPUT
             echo "source-changed=$(find changelogs -name SOURCELOG_\*.txt | wc -l)" >> $GITHUB_OUTPUT
           fi
-
+      - name: Harness Check Changelogs And Server
+        env:
+          EXPECT_LEGS: ${{ inputs.expect-legs }}
+          EXPECT_KEPT: ${{ inputs.expect-kept }}
+          EXPECT_HELD: ${{ inputs.expect-held }}
+          GOT_LEGS: ${{ steps.check.outputs.package-changed }}
+          GOT_SOURCES: ${{ steps.check.outputs.source-changed }}
+          HELD_MANIFESTS: ${{ steps.hold.outputs.held-manifests }}
+          RUN: run-${{ github.run_id }}
+        run: |
+          bad=0
+          echo "package-changed=$GOT_LEGS source-changed=$GOT_SOURCES held-manifests=[$HELD_MANIFESTS]"
+          find /opt/archives -type f | sort
+          [ "$GOT_LEGS" == "$EXPECT_LEGS" ] || { echo "HARNESS FAIL: package-changed $GOT_LEGS != $EXPECT_LEGS"; bad=1; }
+          [ "$GOT_SOURCES" == "$EXPECT_LEGS" ] || { echo "HARNESS FAIL: source-changed $GOT_SOURCES != $EXPECT_LEGS"; bad=1; }
+          for dc in $EXPECT_KEPT; do
+            [ -d "/opt/archives/packages/voulage/$RUN/$dc/testing" ] || { echo "HARNESS FAIL: $dc not in run folder"; bad=1; }
+            [ ! -e "/opt/archives/packages/voulage/held/$RUN/$dc" ] || { echo "HARNESS FAIL: $dc held"; bad=1; }
+          done
+          for dc in $EXPECT_HELD; do
+            [ ! -e "/opt/archives/packages/voulage/$RUN/$dc/testing" ] || { echo "HARNESS FAIL: $dc still in run folder"; bad=1; }
+            ls /opt/archives/workspace/voulage/$RUN/SOURCELOG_testing-${dc%/*}-${dc#*/}-* 2>/dev/null && { echo "HARNESS FAIL: $dc sourcelog still in run folder"; bad=1; }
+            [[ " $HELD_MANIFESTS " == *" ${dc%/*}_${dc#*/}_testing-main_manifest.txt "* ]] || { echo "HARNESS FAIL: $dc manifest not held"; bad=1; }
+          done
+          [ $bad == 0 ] && echo "HARNESS OK: changelogs and server state as expected"
+          exit $bad
   # rebuild sources
   source:
     needs: [changelogs]
     if: ${{ !cancelled() && inputs.do-publish == 'yes' && needs.changelogs.result == 'success' && needs.changelogs.outputs.source-changed != 0 }}
-    uses: ./.github/workflows/rebuild-sources.yml
+    uses: ./.github/workflows/zz-harness-stub.yml
     with:
       pull-from: /opt/archives/workspace/
       push-to: /opt/archives/packages/
       only-codename: ${{ inputs.codename }}
     secrets: inherit
-
   # publish archives
   publish:
     needs: [changelogs, source]
     if: ${{ !cancelled() && inputs.do-publish == 'yes' && needs.changelogs.result == 'success' && needs.source.result != 'failure' && needs.changelogs.outputs.package-changed != 0 }}
-    uses: ./.github/workflows/publish-packages.yml
+    uses: ./.github/workflows/zz-harness-stub.yml
     with:
       packages-path: /opt/archives/packages/
       only-codename: ${{ inputs.codename }}
     secrets: inherit
-
   # update manifests
   manifests:
     runs-on: ubuntu-24.04
@@ -588,14 +433,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Download Artifacts
         uses: actions/download-artifact@v4
         with:
           path: manifests
           pattern: MANIFESTS_*
           merge-multiple: true
-
       - name: Check Manifests
         env:
           HELD_MANIFESTS: ${{ needs.changelogs.outputs.held-manifests }}
@@ -619,33 +462,19 @@ jobs:
             mkdir -p manifests/$distro/$codename/$suite/
             mv $file manifests/$distro/$codename/$suite/$name
           done
-
-      - name: Push Manifest Changes
+      - name: Harness Check Manifests
         env:
-          STAGE: ${{ inputs.stage }}
-          BRANCH: ${{ github.ref_name }}
+          EXPECT_KEPT: ${{ inputs.expect-kept }}
+          EXPECT_HELD: ${{ inputs.expect-held }}
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          git config user.name "regolith-ci-bot"
-          git config user.email "bot@regolith-desktop.com"
-
-          git add -A manifests/
-          if git diff --cached --quiet; then
-            echo "No manifest changes to commit."
-            exit 0
-          fi
-          git commit -m "chore: update ${STAGE} manifest for all packages"
-
-          # Other workflows push to the same branch concurrently; rebase onto
-          # the latest remote tip and retry rather than failing after publish.
-          for attempt in 1 2 3 4 5; do
-            if git pull --rebase origin "$BRANCH" && git push origin "HEAD:$BRANCH"; then
-              exit 0
-            fi
-            git rebase --abort 2>/dev/null || true
-            echo "Push attempt $attempt failed; retrying..."
-            sleep $((attempt * 5))
+          git status --porcelain -uall manifests/
+          bad=0
+          for dc in $EXPECT_KEPT; do
+            [ -n "$(git status --porcelain -uall manifests/$dc/testing-main)" ] || { echo "HARNESS FAIL: $dc manifest not updated"; bad=1; }
           done
-
-          echo "Failed to push manifest changes after 5 attempts." >&2
-          exit 1
+          for dc in $EXPECT_HELD; do
+            [ -z "$(git status --porcelain -uall manifests/$dc/testing-main)" ] || { echo "HARNESS FAIL: $dc manifest updated"; bad=1; }
+          done
+          [ $bad == 0 ] && echo "HARNESS OK: manifests as expected"
+          exit $bad
