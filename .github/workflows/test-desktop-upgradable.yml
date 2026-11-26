@@ -78,6 +78,14 @@ on:
         type: boolean
         required: false
         default: false
+  workflow_call:
+    inputs:
+      from-stage: {type: string, required: true}
+      to-stage: {type: string, required: true}
+      distro: {type: string, required: false, default: ""}
+      codename: {type: string, required: false, default: ""}
+      arch: {type: string, required: false, default: ""}
+      upgrade-os: {type: boolean, required: false, default: false}
 
 # Need to explicitly set shell according to: https://github.com/actions/runner/issues/353#issuecomment-1067227665
 defaults:
