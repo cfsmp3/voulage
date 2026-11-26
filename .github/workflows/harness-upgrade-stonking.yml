@@ -1,0 +1,18 @@
+name: Harness upgrade stonking (test branch only)
+on: push
+jobs:
+  r35-unstable:
+    uses: ./.github/workflows/test-desktop-upgradable.yml
+    with: {from-stage: release-3_5, to-stage: unstable, distro: ubuntu, codename: resolute, upgrade-os: true}
+  r35-testing:
+    uses: ./.github/workflows/test-desktop-upgradable.yml
+    with: {from-stage: release-3_5, to-stage: testing, distro: ubuntu, codename: resolute, upgrade-os: true}
+  unstable:
+    uses: ./.github/workflows/test-desktop-upgradable.yml
+    with: {from-stage: unstable, to-stage: unstable, distro: ubuntu, codename: resolute, upgrade-os: true}
+  testing:
+    uses: ./.github/workflows/test-desktop-upgradable.yml
+    with: {from-stage: testing, to-stage: testing, distro: ubuntu, codename: resolute, upgrade-os: true}
+  r35-noble-control:
+    uses: ./.github/workflows/test-desktop-upgradable.yml
+    with: {from-stage: release-3_5, to-stage: release-3_5, distro: ubuntu, codename: noble, upgrade-os: true}
