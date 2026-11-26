@@ -23,7 +23,10 @@
 # line names <new codename>. The full-upgrade then takes phased updates too,
 # and maintainer scripts can't trip over the container's missing udev daemon.
 # Step 3 also fails when an OS package is left behind its <new codename>
-# version, or when a check command itself fails.
+# version, when the desktop still needs a package that no archive line has
+# any more (a build for the old codename left in place), when the upgrade
+# removed a package that the "to" line has, or when a check command itself
+# fails.
 #
 # The test fails when the upgrade fails, when a package it installed in
 # step 1 is no longer installed, when a package is left not upgraded or in a
@@ -31,7 +34,8 @@
 # version. Packages that were removed, or that are still installed but no
 # longer in any archive line (left over from the "from" line), are listed as
 # warnings: they are expected when a release drops a package, and belong in
-# the release notes.
+# the release notes. Upgrading the OS, that holds only for packages the
+# desktop doesn't need and the "to" line doesn't have, as above.
 #
 # Usage: test-upgrade.sh <distro> <codename> <arch> <from: "suite component"> <to: "suite component"> [<new codename>]
 #   e.g. test-upgrade.sh ubuntu noble amd64 "stable v3.4" "stable v3.5"
@@ -81,6 +85,54 @@ warn() {
 
 installed_packages() {
   dpkg-query -W -f '${db:Status-Abbrev} ${Package} ${Version}\n' | awk '$1 == "ii" { print $2, $3 }' | sort
+}
+
+# needed_packages <package>...: the installed packages that <package>s need
+# to run, themselves included. Follows Depends and Pre-Depends through the
+# installed packages: every installed alternative of a dependency, and every
+# installed package that provides a virtual one, counts.
+needed_packages() {
+  dpkg-query -W -f '${db:Status-Abbrev}\t${Package}\t${Provides}\t${Pre-Depends}, ${Depends}\n' |
+    awk -F '\t' -v roots="$*" '
+      # name <relation>: the package name of "name:arch (>= version)"
+      function name(relation) {
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", relation)
+        sub(/[[:space:](:].*/, "", relation)
+        return relation
+      }
+      substr($1, 2, 1) == "i" {
+        installed[$2] = 1
+        depends[$2] = $4
+        n = split($3, provides, ",")
+        for (i = 1; i <= n; i++) {
+          p = name(provides[i])
+          if (p != "") providers[p] = providers[p] " " $2
+        }
+      }
+      END {
+        n = split(roots, queue, " ")
+        for (i = 1; i <= n; i++) {
+          if (queue[i] in installed) need[queue[i]] = 1
+        }
+        while (n > 0) {
+          package = queue[n--]
+          if (!(package in installed)) continue
+          clauses = split(depends[package], clause, "[,|]")
+          for (c = 1; c <= clauses; c++) {
+            d = name(clause[c])
+            if (d == "") continue
+            candidates = (d in installed ? d : "") providers[d]
+            m = split(candidates, candidate, " ")
+            for (j = 1; j <= m; j++) {
+              if (!(candidate[j] in need)) {
+                need[candidate[j]] = 1
+                queue[++n] = candidate[j]
+              }
+            }
+          }
+        }
+        for (package in need) print package
+      }' | sort
 }
 
 # Moving the OS's own source entries to the new codename. Entries name it in
@@ -583,13 +635,47 @@ only_in() {  # only_in <a> <b>: packages in list a but not in list b
 }
 
 removed=$(only_in "$WORKDIR/before.txt" "$WORKDIR/after.txt")
-if [ -n "$removed" ]; then
-  warn "removed by the upgrade: $removed"
-fi
 
 # Installed packages that no archive line has any more: left over from the
 # from line, e.g. packages the new release dropped.
 leftover=$(apt list --installed 2>/dev/null | awk -F/ '/,local\]/ { print $1 }' | tr '\n' ' ')
+
+# Upgrading the OS, a package left over or removed can also mean that the
+# new release's Regolith line is incomplete, and the full-upgrade exits 0
+# either way:
+# - a package the desktop still needs (see needed_packages) and no archive
+#   line has is a build for the old codename the upgrade could not replace,
+#   e.g. a session's compositor still on a library the new release dropped,
+#   or a Regolith package that pins an OS package to its old version;
+# - a package the to line has, removed by the upgrade, is one the new
+#   release's packages could not keep installed.
+# Both fail. Packages the desktop doesn't need, and removed packages the to
+# line doesn't have (release drops, library renames), stay warnings.
+if [ "$OS_UPGRADE" -eq 1 ]; then
+  needed_packages "${targets[@]}" > "$WORKDIR/needed.txt"
+  kept_leftover=
+  for package in $leftover; do
+    if grep -qxF "$package" "$WORKDIR/needed.txt"; then
+      fail "$package $(dpkg-query -W -f '${Version}' "$package") is in no archive line any more, but the upgraded desktop still needs it: the upgrade left the $CODENAME build in place"
+    else
+      kept_leftover+="$package "
+    fi
+  done
+  leftover=$kept_leftover
+  kept_removed=
+  for package in $removed; do
+    if [ -s "$WORKDIR/to-index.txt" ] && awk -v p="$package" '$1 == p { found = 1 } END { exit !found }' "$WORKDIR/to-index.txt"; then
+      fail "$package was removed by the upgrade, although the to line has it"
+    else
+      kept_removed+="$package "
+    fi
+  done
+  removed=$kept_removed
+fi
+
+if [ -n "$removed" ]; then
+  warn "removed by the upgrade: $removed"
+fi
 if [ -n "$leftover" ]; then
   warn "installed but no longer in any archive line (left over from $FROM_SUITE $FROM_COMPONENT): $leftover"
 fi
