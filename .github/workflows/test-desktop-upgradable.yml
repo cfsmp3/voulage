@@ -15,7 +15,9 @@ run-name: Test upgrade ${{ inputs.from-stage }} to ${{ inputs.to-stage }} ${{ in
 # may be the same stage. Targets are then the supported OS upgrade paths
 # (UPGRADE_PATHS below) whose old codename is in stage/<from-stage> and whose
 # new codename is in stage/<to-stage>; the distro and codename inputs select by
-# the old codename.
+# the old codename. A path is there before its new codename has a release
+# stage: ubuntu resolute to stonking runs into unstable and testing (e.g.
+# release-3_5 to unstable) until stonking is released.
 
 on:
   workflow_dispatch:
@@ -72,7 +74,7 @@ on:
         required: false
         default: ""
       upgrade-os:
-        description: "Also upgrade the OS to its next release (jammy to noble, noble or questing to resolute, bookworm to trixie)"
+        description: "Also upgrade the OS to its next release (jammy to noble, noble or questing to resolute, resolute to stonking, bookworm to trixie)"
         type: boolean
         required: false
         default: false
@@ -117,6 +119,7 @@ jobs:
             "ubuntu jammy noble"
             "ubuntu noble resolute"
             "ubuntu questing resolute"
+            "ubuntu resolute stonking"
           )
 
           if [ "$FROM_STAGE" == "$TO_STAGE" ] && [ "$UPGRADE_OS" != "true" ]; then
